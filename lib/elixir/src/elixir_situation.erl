@@ -267,15 +267,28 @@ gather_context(Pattern, _S, E) ->
 
 format_imports(Imports) when is_map(Imports) ->
   maps:fold(fun(Mod, Funs, Acc) ->
-    FormattedFuns = [io_lib:format("~s/~B", [F, A]) || {F, A} <- Funs],
-    [{Mod, FormattedFuns} | Acc]
+    case skip_import(Mod) of
+      true -> Acc;
+      false ->
+        FormattedFuns = [io_lib:format("~s/~B", [F, A]) || {F, A} <- Funs],
+        [{Mod, FormattedFuns} | Acc]
+    end
   end, [], Imports);
 format_imports(Imports) when is_list(Imports) ->
   lists:foldl(fun({Mod, Funs}, Acc) ->
-    FormattedFuns = [io_lib:format("~s/~B", [F, A]) || {F, A} <- Funs],
-    [{Mod, FormattedFuns} | Acc]
+    case skip_import(Mod) of
+      true -> Acc;
+      false ->
+        FormattedFuns = [io_lib:format("~s/~B", [F, A]) || {F, A} <- Funs],
+        [{Mod, FormattedFuns} | Acc]
+    end
   end, [], Imports);
 format_imports(_) -> [].
+
+%% Filter out default imports that are just noise in the prompt
+skip_import('Elixir.Kernel') -> true;
+skip_import('Elixir.Kernel.SpecialForms') -> true;
+skip_import(_) -> false.
 
 %% Expert Language Server integration
 
