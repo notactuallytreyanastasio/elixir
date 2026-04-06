@@ -261,13 +261,14 @@ is_claude_cli(Command) ->
 %%
 %% Flags:
 %%   --print              Non-interactive, pipe mode
-%%   --bare               Skip hooks, LSP, CLAUDE.md, auto-memory — pure inference
 %%   --dangerously-skip-permissions   No permission prompts during compilation
 %%   --output-format text  Raw text output, no JSON wrapping
 %%   --system-prompt      Behavioral instructions (separate from user prompt)
 %%   --model              Uses configured model (default: sonnet for speed)
 %%
 %% Uses Pro/Max subscription billing, not API keys.
+%% Note: --bare is intentionally omitted — it disables OAuth/keychain auth
+%% which is the auth path for Pro/Max subscriptions.
 
 invoke_claude_cli(BaseCommand, UserPrompt, Timeout) ->
   Model = elixir_config:get(situation_model, "sonnet"),
@@ -279,14 +280,17 @@ invoke_claude_cli(BaseCommand, UserPrompt, Timeout) ->
   ok = file:write_file(TmpFile, UserPrompt),
 
   %% Shell-escape the system prompt (single quotes, escape internal single quotes)
-  EscapedSystemPrompt = shell_escape(SystemPrompt),
+  EscapedSystemPrompt = lists:flatten(shell_escape(SystemPrompt)),
 
-  FullCmd = unicode:characters_to_list(io_lib:format(
-    "~s --print --bare --dangerously-skip-permissions "
-    "--output-format text --model ~s "
-    "--system-prompt ~s "
-    "< \"~s\"",
-    [BaseCommand, Model, EscapedSystemPrompt, TmpFile])),
+  %% Build command as flat charlist — avoid io_lib:format type issues
+  FullCmd = lists:flatten([
+    unicode:characters_to_list(BaseCommand),
+    " --print --dangerously-skip-permissions"
+    " --output-format text --model ",
+    unicode:characters_to_list(Model),
+    " --system-prompt ", EscapedSystemPrompt,
+    " < \"", TmpFile, "\""
+  ]),
 
   Result = invoke_with_timeout(FullCmd, Timeout),
   file:delete(TmpFile),
@@ -329,9 +333,13 @@ collect_port_output(Port, Acc, Timeout) ->
   end.
 
 shell_escape(Str) ->
-  %% Wrap in single quotes, escape any internal single quotes
-  Escaped = re:replace(Str, "'", "'\\''", [global, {return, list}]),
-  "'" ++ Escaped ++ "'".
+  %% Wrap in single quotes, escape internal single quotes: ' -> '\''
+  Flat = unicode:characters_to_list(Str),
+  "'" ++ escape_single_quotes(Flat) ++ "'".
+
+escape_single_quotes([]) -> [];
+escape_single_quotes([$' | Rest]) -> "'\\''" ++ escape_single_quotes(Rest);
+escape_single_quotes([C | Rest]) -> [C | escape_single_quotes(Rest)].
 
 tmp_file() ->
   {A, B, C} = erlang:timestamp(),
