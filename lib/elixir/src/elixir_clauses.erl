@@ -7,6 +7,7 @@
 -module(elixir_clauses).
 -export([parallel_match/4, match/6, clause/6, def/3, head/4,
          'case'/4, 'receive'/4, 'try'/4, 'cond'/4, with/4,
+         expand_head/2, assert_at_most_once/4,
          format_error/1]).
 -import(elixir_errors, [file_error/4, file_warn/4]).
 -include("elixir.hrl").

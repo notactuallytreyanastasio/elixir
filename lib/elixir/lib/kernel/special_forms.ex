@@ -1985,6 +1985,67 @@ defmodule Kernel.SpecialForms do
   """
   defmacro case(condition, clauses), do: error!([condition, clauses])
 
+  @doc ~S"""
+  Matches the given expression against the given clauses, with
+  LLM-backed hole filling for clause bodies marked with `___`.
+
+  `situation/2` works exactly like `case/2`, except that clause
+  bodies can use the hole operator `___` to delegate code generation
+  to a configured LLM at compile time. After compilation, the result
+  is indistinguishable from hand-written code — it receives full
+  type checking, pattern inference, and Dialyzer analysis.
+
+  ## Hole Syntax
+
+      situation expr do
+        pattern1 -> ___.("describe what this clause should do")
+        pattern2 -> regular_code_here()
+      end
+
+  The string passed to `___` describes the developer's intent.
+  The compiler sends this along with code context to the
+  configured LLM command. A bare `___` without a string is
+  also valid but provides the LLM less guidance.
+
+  ## Configuration
+
+  Set the LLM command in your project's `mix.exs`:
+
+      def project do
+        [elixirc_options: [situation_command: "claude --print"]]
+      end
+
+  Or at runtime:
+
+      Code.put_compiler_option(:situation_command, "claude --print")
+
+  ## Options
+
+    * `:situation_command` - the shell command to invoke (receives prompt on stdin, returns code on stdout)
+    * `:situation_timeout` - timeout in milliseconds (default: 30000)
+    * `:situation_cache` - whether to cache LLM results (default: true)
+    * `:situation_expert_node` - explicit Expert LS engine node name (optional, auto-discovered)
+
+  ## Examples
+
+      situation fetch_user(conn) do
+        {:ok, user} ->
+          ___.("load the user's account, check if paid, return user data or 403")
+
+        {:error, :not_found} ->
+          ___.("return a 404 response with appropriate error message")
+
+        {:error, reason} ->
+          ___.("log the error and return a 500 response")
+      end
+
+  After compilation, the generated code is a normal `case` expression.
+  Variables bound in clause patterns are available to the generated code.
+  Variables in generated code do not leak to the outer scope.
+  """
+  @doc since: "1.20.0"
+  defmacro situation(condition, clauses), do: error!([condition, clauses])
+
   @doc """
   Evaluates the expression corresponding to the first clause that
   evaluates to a truthy value.
