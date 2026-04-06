@@ -1,6 +1,6 @@
 %% SPDX-License-Identifier: Apache-2.0
 -module(elixir_situation).
--export(['situation'/4, is_claude_cli/1, format_error/1]).
+-export(['situation'/4, is_claude_cli/1, format_entries/1, safe_expert_call/3, format_error/1]).
 -import(elixir_errors, [file_error/4]).
 -include("elixir.hrl").
 
@@ -39,7 +39,7 @@ expand_situation_clauses(Meta, {Key, _}, _, E) ->
 
 %% Individual clause expansion with hole detection
 
-expand_situation_clause(Meta, {'->', CMeta, [Left, Right]}, S, E) ->
+expand_situation_clause(_Meta, {'->', CMeta, [Left, Right]}, S, E) ->
   %% Expand the left side (pattern) using case head expansion
   Fun = elixir_clauses:expand_head('situation', 'do'),
   {ELeft, SL, EL} = Fun(CMeta, Left, S, E),
@@ -165,7 +165,7 @@ offset_of_line(Source, Line) ->
   offset_of_line(Source, 1, 0, Line).
 
 offset_of_line(_Source, Current, Offset, Target) when Current >= Target -> Offset;
-offset_of_line(Source, Current, Offset, Target) when Offset >= byte_size(Source) -> Offset;
+offset_of_line(Source, _Current, Offset, _Target) when Offset >= byte_size(Source) -> Offset;
 offset_of_line(Source, Current, Offset, Target) ->
   case binary:at(Source, Offset) of
     $\n -> offset_of_line(Source, Current + 1, Offset + 1, Target);
@@ -201,7 +201,7 @@ find_matching_paren(Source, Pos, Depth) ->
   end.
 
 %% Skip past a string literal (handling escaped quotes)
-skip_string(Source, Pos, Depth) when Pos >= byte_size(Source) -> error;
+skip_string(Source, Pos, _Depth) when Pos >= byte_size(Source) -> error;
 skip_string(Source, Pos, Depth) ->
   case binary:at(Source, Pos) of
     $\\ -> skip_string(Source, Pos + 2, Depth);  %% skip escaped char
@@ -296,23 +296,58 @@ is_expert_engine_node(Node) ->
 enrich_with_expert(Context, Node, E) ->
   Module = maps:get(module, E, nil),
   Function = maps:get(function, E, nil),
+  ModStr = atom_to_list(Module),
   try
-    %% Get references for current function
-    Refs = case Function of
+    FunSubject = case Function of
       {FunName, Arity} ->
-        Subject = iolist_to_binary(io_lib:format("~s.~s/~B", [Module, FunName, Arity])),
-        erpc:call(Node, 'Elixir.Engine.Search.Store', exact,
-          [Subject, [{type, {function, usage}}, {subtype, reference}]], 5000);
-      _ -> []
+        iolist_to_binary(io_lib:format("~s.~s/~B", [Module, FunName, Arity]));
+      _ -> nil
     end,
 
-    %% Get module type specs/attributes
-    Specs = erpc:call(Node, 'Elixir.Engine.Search.Store', exact,
-      [atom_to_list(Module), [{type, module_attribute}]], 5000),
+    %% 1. Callers — who calls this function and what they pass
+    Callers = case FunSubject of
+      nil -> [];
+      _ -> safe_expert_call(Node, exact,
+             [FunSubject, [{type, {function, usage}}, {subtype, reference}]])
+    end,
+
+    %% 2. Function definition — @spec, @doc, source
+    FunDef = case FunSubject of
+      nil -> [];
+      _ -> safe_expert_call(Node, exact,
+             [FunSubject, [{type, {function, public}}, {subtype, definition}]])
+    end,
+
+    %% 3. Module attributes — @moduledoc, type specs, module-level @doc
+    ModAttrs = safe_expert_call(Node, exact,
+                 [ModStr, [{type, module_attribute}]]),
+
+    %% 4. Struct definitions in this module (if any)
+    Structs = safe_expert_call(Node, exact,
+                [ModStr, [{type, struct}]]),
+
+    %% 5. Related modules — siblings in the same namespace
+    ModPrefix = case string:split(ModStr, ".", trailing) of
+      [Prefix, _] -> Prefix;
+      _ -> ModStr
+    end,
+    SiblingMods = safe_expert_call(Node, prefix,
+                    [ModPrefix, [{type, module}, {subtype, definition}]]),
+
+    %% 6. Tests for this function (if any)
+    Tests = case FunSubject of
+      nil -> [];
+      _ -> safe_expert_call(Node, fuzzy,
+             [FunSubject, [{type, ex_unit_test}]])
+    end,
 
     Context#{
-      references => format_refs(Refs),
-      type_specs => format_specs(Specs)
+      callers       => format_entries(Callers),
+      function_def  => format_entries(FunDef),
+      module_attrs  => format_entries(ModAttrs),
+      structs       => format_entries(Structs),
+      sibling_mods  => format_entries(SiblingMods),
+      tests         => format_entries(Tests)
     }
   catch
     _:_ ->
@@ -320,13 +355,20 @@ enrich_with_expert(Context, Node, E) ->
       Context
   end.
 
-format_refs(Refs) when is_list(Refs) ->
-  [maps:get(subject, R, <<"">>) || R <- Refs, is_map(R)];
-format_refs(_) -> [].
+%% Safe wrapper for Expert engine calls — returns [] on any failure
+safe_expert_call(Node, Function, Args) ->
+  try
+    erpc:call(Node, 'Elixir.Engine.Search.Store', Function, Args, 5000)
+  catch
+    _:_ -> []
+  end.
 
-format_specs(Specs) when is_list(Specs) ->
-  [maps:get(subject, S, <<"">>) || S <- Specs, is_map(S)];
-format_specs(_) -> [].
+format_entries(Entries) when is_list(Entries) ->
+  [#{subject => maps:get(subject, E, <<"">>),
+     path    => maps:get(path, E, <<"">>)}
+   || E <- Entries, is_map(E)];
+format_entries(_) -> [].
+
 
 %% ===================================================================
 %% LLM invocation
@@ -375,37 +417,64 @@ build_user_prompt(Intent, Context) ->
   Function = maps:get(function, Context, nil),
   Pattern = maps:get(pattern, Context, <<"">>),
   Imports = maps:get(imports, Context, []),
-  Refs = maps:get(references, Context, []),
-  Specs = maps:get(type_specs, Context, []),
+
+  %% Expert-enriched fields (empty lists if Expert not available)
+  Callers = maps:get(callers, Context, []),
+  FunDef = maps:get(function_def, Context, []),
+  ModAttrs = maps:get(module_attrs, Context, []),
+  Structs = maps:get(structs, Context, []),
+  SiblingMods = maps:get(sibling_mods, Context, []),
+  Tests = maps:get(tests, Context, []),
 
   FunStr = case Function of
     {Name, Arity} -> io_lib:format("~s/~B", [Name, Arity]);
     _ -> "unknown"
   end,
 
-  ImportStr = lists:foldl(fun({Mod, Funs}, Acc) ->
-    [io_lib:format("  ~s: ~s~n", [Mod, lists:join(", ", Funs)]) | Acc]
-  end, [], Imports),
+  ImportStr = format_section_list(Imports, fun({Mod, Funs}) ->
+    io_lib:format("  ~s: ~s", [Mod, lists:join(", ", Funs)])
+  end),
 
-  RefStr = case Refs of
-    [] -> "  (none available)\n";
-    _ -> lists:foldl(fun(R, Acc) -> [io_lib:format("  ~s~n", [R]) | Acc] end, [], Refs)
-  end,
-
-  SpecStr = case Specs of
-    [] -> "  (none available)\n";
-    _ -> lists:foldl(fun(S, Acc) -> [io_lib:format("  ~s~n", [S]) | Acc] end, [], Specs)
-  end,
+  CallerStr = format_entry_section(Callers),
+  FunDefStr = format_entry_section_with_path(FunDef),
+  ModAttrStr = format_entry_section(ModAttrs),
+  StructStr = format_entry_section(Structs),
+  SiblingStr = format_entry_section(SiblingMods),
+  TestStr = format_entry_section(Tests),
 
   iolist_to_binary([
     "Module: ", atom_to_list(Module), "\n",
     "Function: ", FunStr, "\n",
     "Matched pattern: ", Pattern, "\n\n",
     "Available imports:\n", ImportStr, "\n",
-    "References in this function:\n", RefStr, "\n",
-    "Type specs:\n", SpecStr, "\n",
+    "Callers of this function:\n", CallerStr, "\n",
+    "Function definition/spec:\n", FunDefStr, "\n",
+    "Module attributes (@moduledoc, @type, etc):\n", ModAttrStr, "\n",
+    "Struct definitions in this module:\n", StructStr, "\n",
+    "Sibling modules:\n", SiblingStr, "\n",
+    "Related tests:\n", TestStr, "\n",
     "Intent: ", Intent, "\n"
   ]).
+
+format_section_list([], _FormatFun) -> "  (none available)\n";
+format_section_list(Items, FormatFun) ->
+  lists:foldl(fun(Item, Acc) ->
+    [FormatFun(Item), "\n" | Acc]
+  end, [], Items).
+
+format_entry_section([]) -> "  (none available)\n";
+format_entry_section(Entries) ->
+  lists:foldl(fun(#{subject := S}, Acc) ->
+    ["  ", unicode:characters_to_list(S), "\n" | Acc];
+  (_, Acc) -> Acc
+  end, [], Entries).
+
+format_entry_section_with_path([]) -> "  (none available)\n";
+format_entry_section_with_path(Entries) ->
+  lists:foldl(fun(#{subject := S, path := P}, Acc) ->
+    ["  ", unicode:characters_to_list(S), " (", unicode:characters_to_list(P), ")\n" | Acc];
+  (_, Acc) -> Acc
+  end, [], Entries).
 
 %% ===================================================================
 %% Command invocation
@@ -432,12 +501,24 @@ invoke_claude_cli(BaseCommand, UserPrompt, Timeout) ->
 
   EscapedSystemPrompt = lists:flatten(shell_escape(SystemPrompt)),
 
+  %% Session continuity: first hole in this compilation starts a fresh session,
+  %% subsequent holes use --continue to resume, so Claude accumulates context
+  %% from all previously filled holes in this compile run.
+  SessionFlag = case elixir_config:get(situation_session_started, false) of
+    false ->
+      elixir_config:put(situation_session_started, true),
+      "";
+    true ->
+      " --continue"
+  end,
+
   FullCmd = lists:flatten([
     unicode:characters_to_list(BaseCommand),
     " --print --dangerously-skip-permissions"
     " --output-format text --model ",
     unicode:characters_to_list(Model),
     " --system-prompt ", EscapedSystemPrompt,
+    SessionFlag,
     " < \"", TmpFile, "\""
   ]),
 

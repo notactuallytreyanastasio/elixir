@@ -103,7 +103,8 @@ start(_Type, _Args) ->
     {situation_timeout, 30000},
     {situation_cache, true},
     {situation_expert_node, false},
-    {situation_model, "sonnet"}
+    {situation_model, "sonnet"},
+    {situation_session_started, false}
     | URIConfig
   ],
 
