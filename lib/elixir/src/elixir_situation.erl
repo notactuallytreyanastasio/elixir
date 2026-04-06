@@ -47,9 +47,41 @@ expand_situation_clause(Meta, {'->', CMeta, [Left, Right]}, S, E) ->
   %% Check if the right side is a hole
   case detect_hole(Right) of
     {hole, Intent} ->
+      File = maps:get(file, EL, <<"nofile">>),
+      Line = case lists:keyfind(line, 1, CMeta) of
+        {line, L} -> L; false -> 0
+      end,
+      Module = maps:get(module, EL, nil),
+      {FunName, FunArity} = case maps:get(function, EL, nil) of
+        {N, A} -> {N, A}; _ -> {'?', 0}
+      end,
+      Pattern = iolist_to_binary('Elixir.Macro':to_string(ELeft)),
+
+      %% Print header
+      io:format(standard_error,
+        "\n\e[36m┌─ situation\e[0m ~ts:~B \e[2m~s.~s/~B\e[0m\n"
+        "\e[36m│\e[0m \e[2mpattern:\e[0m ~ts\n"
+        "\e[36m│\e[0m \e[2mintent:\e[0m\n",
+        [File, Line, Module, FunName, FunArity, Pattern]),
+      print_indented_lines(string:trim(Intent)),
+      io:format(standard_error, "\e[36m│\e[0m\n\e[36m│\e[0m \e[33mInvoking Claude...\e[0m\n", []),
+
       %% Gather context and invoke LLM
       Context = gather_context(ELeft, SL, EL),
-      Generated = invoke_llm(Intent, Context, CMeta, EL),
+      {RawCode, Generated} = invoke_llm(Intent, Context, CMeta, EL),
+
+      %% Print generated code
+      io:format(standard_error, "\e[36m│\e[0m \e[32mGenerated:\e[0m\n", []),
+      print_indented_lines(RawCode),
+
+      %% Rewrite the source file
+      rewrite_source(File, Line, Right, RawCode),
+
+      %% Show git diff
+      show_diff(File),
+
+      io:format(standard_error, "\e[36m└─\e[0m\n\n", []),
+
       %% Expand the generated code as the clause body
       {ERight, SR, ER} = elixir_expand:expand(Generated, SL, EL),
       {{'->', CMeta, [ELeft, ERight]}, SR, ER};
@@ -60,6 +92,141 @@ expand_situation_clause(Meta, {'->', CMeta, [Left, Right]}, S, E) ->
   end;
 expand_situation_clause(Meta, _, _, E) ->
   file_error(Meta, E, elixir_clauses, {bad_or_missing_clauses, {'situation', 'do'}}).
+
+%% ===================================================================
+%% Diagnostic output helpers
+%% ===================================================================
+
+print_indented_lines(Text) ->
+  Lines = string:split(unicode:characters_to_list(Text), "\n", all),
+  lists:foreach(fun(Line) ->
+    io:format(standard_error, "\e[36m│\e[0m   ~ts\n", [Line])
+  end, Lines).
+
+show_diff(File) ->
+  FilePath = unicode:characters_to_list(File),
+  Cmd = lists:flatten(["git diff --no-color -- \"", FilePath, "\" 2>/dev/null"]),
+  case os:cmd(Cmd) of
+    [] -> ok;
+    Diff ->
+      io:format(standard_error, "\e[36m│\e[0m\n\e[36m│\e[0m \e[2mdiff:\e[0m\n", []),
+      DiffLines = string:split(Diff, "\n", all),
+      lists:foreach(fun(DLine) ->
+        Colored = color_diff_line(DLine),
+        io:format(standard_error, "\e[36m│\e[0m   ~ts\n", [Colored])
+      end, DiffLines)
+  end.
+
+color_diff_line([$+ | _] = Line) -> "\e[32m" ++ Line ++ "\e[0m";
+color_diff_line([$- | _] = Line) -> "\e[31m" ++ Line ++ "\e[0m";
+color_diff_line([$@ | _] = Line) -> "\e[35m" ++ Line ++ "\e[0m";
+color_diff_line(Line) -> Line.
+
+%% ===================================================================
+%% Source file rewriting
+%% ===================================================================
+
+%% Replace the ___("...") call in the source file with generated code.
+%% Scans for the literal text ___( starting near the hole's line,
+%% then finds the matching close paren to determine the full extent.
+
+rewrite_source(File, Line, _HoleExpr, RawCode) ->
+  FilePath = unicode:characters_to_list(File),
+  case file:read_file(FilePath) of
+    {ok, Source} ->
+      %% Find byte offset of the target line
+      LineOffset = offset_of_line(Source, Line),
+      %% Scan forward from that line for ___( or ___.(
+      case find_hole_call(Source, LineOffset) of
+        {Start, End} ->
+          %% Determine indentation of the ___( call
+          Indent = column_at(Source, Start),
+          IndentStr = lists:duplicate(Indent, $\s),
+
+          %% Indent the generated code to match
+          Trimmed = unicode:characters_to_binary(string:trim(RawCode)),
+          CodeLines = binary:split(Trimmed, <<"\n">>, [global]),
+          Indented = indent_code(CodeLines, IndentStr),
+
+          %% Replace in source
+          Before = binary:part(Source, 0, Start),
+          After = binary:part(Source, End, byte_size(Source) - End),
+          NewSource = <<Before/binary, Indented/binary, After/binary>>,
+          file:write_file(FilePath, NewSource);
+        not_found ->
+          ok
+      end;
+    {error, _} ->
+      ok
+  end.
+
+%% Find the byte offset of a given line number (1-based)
+offset_of_line(Source, Line) ->
+  offset_of_line(Source, 1, 0, Line).
+
+offset_of_line(_Source, Current, Offset, Target) when Current >= Target -> Offset;
+offset_of_line(Source, Current, Offset, Target) when Offset >= byte_size(Source) -> Offset;
+offset_of_line(Source, Current, Offset, Target) ->
+  case binary:at(Source, Offset) of
+    $\n -> offset_of_line(Source, Current + 1, Offset + 1, Target);
+    _   -> offset_of_line(Source, Current, Offset + 1, Target)
+  end.
+
+%% Scan forward from Offset looking for ___( or ___.(
+%% Returns {Start, End} where Start is the byte of the first _
+%% and End is the byte after the closing )
+find_hole_call(Source, Offset) ->
+  case binary:match(Source, [<<"___(">>, <<"___.(">>, <<"___.(\"">>], [{scope, {Offset, byte_size(Source) - Offset}}]) of
+    {Start, MatchLen} ->
+      %% Find the opening paren
+      ParenPos = Start + MatchLen - 1,
+      %% Find the matching close paren
+      case find_matching_paren(Source, ParenPos, 0) of
+        {ok, ClosePos} -> {Start, ClosePos + 1};
+        error -> not_found
+      end;
+    nomatch ->
+      not_found
+  end.
+
+%% Find matching close paren, handling nested parens and strings
+find_matching_paren(Source, Pos, _Depth) when Pos >= byte_size(Source) -> error;
+find_matching_paren(Source, Pos, Depth) ->
+  case binary:at(Source, Pos) of
+    $( -> find_matching_paren(Source, Pos + 1, Depth + 1);
+    $) when Depth =:= 1 -> {ok, Pos};
+    $) -> find_matching_paren(Source, Pos + 1, Depth - 1);
+    $" -> skip_string(Source, Pos + 1, Depth);
+    _  -> find_matching_paren(Source, Pos + 1, Depth)
+  end.
+
+%% Skip past a string literal (handling escaped quotes)
+skip_string(Source, Pos, Depth) when Pos >= byte_size(Source) -> error;
+skip_string(Source, Pos, Depth) ->
+  case binary:at(Source, Pos) of
+    $\\ -> skip_string(Source, Pos + 2, Depth);  %% skip escaped char
+    $"  -> find_matching_paren(Source, Pos + 1, Depth);
+    _   -> skip_string(Source, Pos + 1, Depth)
+  end.
+
+%% Find the column (number of spaces from start of line) at a byte position
+column_at(Source, Pos) ->
+  column_at(Source, Pos, 0).
+
+column_at(_Source, 0, Acc) -> Acc;
+column_at(Source, Pos, Acc) ->
+  case binary:at(Source, Pos - 1) of
+    $\n -> Acc;
+    _   -> column_at(Source, Pos - 1, Acc + 1)
+  end.
+
+%% Indent all lines of generated code except the first
+indent_code([First], _Indent) -> First;
+indent_code([First | Rest], Indent) ->
+  IndentBin = unicode:characters_to_binary(Indent),
+  Indented = [<<IndentBin/binary, L/binary>> || L <- Rest, L =/= <<>>],
+  iolist_to_binary(lists:join(<<"\n">>, [First | Indented]));
+indent_code([], _Indent) -> <<>>.
 
 %% Hole detection
 %%
@@ -174,7 +341,9 @@ invoke_llm(Intent, Context, Meta, E) ->
       UserPrompt = build_user_prompt(Intent, Context),
       case invoke_command(Command, UserPrompt, Timeout) of
         {ok, Code} ->
-          parse_code(Code, Meta, E);
+          Trimmed = string:trim(Code),
+          Parsed = parse_code(Trimmed, Meta, E),
+          {Trimmed, Parsed};
         {error, timeout} ->
           file_error(Meta, E, ?MODULE, {hole_invocation_timeout, Timeout});
         {error, Reason} ->
@@ -242,11 +411,6 @@ build_user_prompt(Intent, Context) ->
 %% Command invocation
 %% ===================================================================
 
-%% Determine whether the command is a Claude CLI path or a custom command.
-%% If it looks like a claude invocation (contains "claude" in the basename),
-%% we build the full flag set. Otherwise we treat it as a raw command that
-%% receives prompt on stdin and returns code on stdout.
-
 invoke_command(Command, UserPrompt, Timeout) ->
   case is_claude_cli(Command) of
     true  -> invoke_claude_cli(Command, UserPrompt, Timeout);
@@ -254,39 +418,20 @@ invoke_command(Command, UserPrompt, Timeout) ->
   end.
 
 is_claude_cli(Command) ->
-  %% Check if the command basename is "claude" (with optional path prefix)
-  %% e.g. "claude", "/usr/local/bin/claude", "claude --model opus"
   Trimmed = string:trim(Command),
   FirstWord = hd(string:split(Trimmed, " ")),
   Basename = filename:basename(unicode:characters_to_list(FirstWord)),
   Basename =:= "claude".
 
-%% Claude CLI invocation with proper flags for compile-time use.
-%%
-%% Flags:
-%%   --print              Non-interactive, pipe mode
-%%   --dangerously-skip-permissions   No permission prompts during compilation
-%%   --output-format text  Raw text output, no JSON wrapping
-%%   --system-prompt      Behavioral instructions (separate from user prompt)
-%%   --model              Uses configured model (default: sonnet for speed)
-%%
-%% Uses Pro/Max subscription billing, not API keys.
-%% Note: --bare is intentionally omitted — it disables OAuth/keychain auth
-%% which is the auth path for Pro/Max subscriptions.
-
 invoke_claude_cli(BaseCommand, UserPrompt, Timeout) ->
   Model = elixir_config:get(situation_model, "sonnet"),
   SystemPrompt = system_prompt(),
 
-  %% Build the full command with proper flags
-  %% The user prompt goes on stdin via temp file
   TmpFile = tmp_file(),
   ok = file:write_file(TmpFile, UserPrompt),
 
-  %% Shell-escape the system prompt (single quotes, escape internal single quotes)
   EscapedSystemPrompt = lists:flatten(shell_escape(SystemPrompt)),
 
-  %% Build command as flat charlist — avoid io_lib:format type issues
   FullCmd = lists:flatten([
     unicode:characters_to_list(BaseCommand),
     " --print --dangerously-skip-permissions"
@@ -300,11 +445,6 @@ invoke_claude_cli(BaseCommand, UserPrompt, Timeout) ->
   file:delete(TmpFile),
   Result.
 
-%% Raw command invocation for custom/test commands.
-%% The command receives the full prompt on stdin and returns code on stdout.
-%% System prompt is prepended to the input since raw commands have no
-%% --system-prompt flag.
-
 invoke_raw_command(Command, UserPrompt, Timeout) ->
   TmpFile = tmp_file(),
   ok = file:write_file(TmpFile, UserPrompt),
@@ -313,8 +453,6 @@ invoke_raw_command(Command, UserPrompt, Timeout) ->
   Result = invoke_with_timeout(FullCmd, Timeout),
   file:delete(TmpFile),
   Result.
-
-%% Execute a shell command with timeout enforcement via open_port.
 
 invoke_with_timeout(Cmd, Timeout) ->
   Port = open_port({spawn, Cmd}, [stream, exit_status, binary, stderr_to_stdout]),
@@ -331,13 +469,11 @@ collect_port_output(Port, Acc, Timeout) ->
                                               [Status, string:trim(Acc)]))}
   after Timeout ->
     port_close(Port),
-    %% Kill the OS process group
     catch os:cmd("kill -9 " ++ integer_to_list(erlang:port_info(Port, os_pid))),
     {error, timeout}
   end.
 
 shell_escape(Str) ->
-  %% Wrap in single quotes, escape internal single quotes: ' -> '\''
   Flat = unicode:characters_to_list(Str),
   "'" ++ escape_single_quotes(Flat) ++ "'".
 
@@ -355,9 +491,7 @@ tmp_file() ->
 %% ===================================================================
 
 parse_code(Code, Meta, E) ->
-  Trimmed = string:trim(Code),
-  %% string_to_quoted expects a charlist
-  Charlist = unicode:characters_to_list(Trimmed),
+  Charlist = unicode:characters_to_list(Code),
   try elixir:string_to_quoted(Charlist, 1, 1, <<"situation">>, []) of
     {ok, Quoted} -> Quoted;
     {error, {_, _, Msg}} ->
