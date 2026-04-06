@@ -97,6 +97,12 @@ expand_situation_clause(Meta, _, _, E) ->
 %% Diagnostic output helpers
 %% ===================================================================
 
+verbose_log(false, _Fmt, _Args) -> ok;
+verbose_log(true, Fmt, Args) ->
+  Lines = unicode:characters_to_list(io_lib:format(Fmt, Args)),
+  Indented = string:replace(Lines, "\n", "\n\e[36m│\e[0m   ", all),
+  io:format(standard_error, "\e[36m│\e[0m   ~ts\n", [Indented]).
+
 print_indented_lines(Text) ->
   Lines = string:split(unicode:characters_to_list(Text), "\n", all),
   lists:foreach(fun(Line) ->
@@ -380,15 +386,29 @@ invoke_llm(Intent, Context, Meta, E) ->
       file_error(Meta, E, ?MODULE, situation_not_configured);
     Command ->
       Timeout = elixir_config:get(situation_timeout, 30000),
+      Verbose = elixir_config:get(situation_verbose, false),
       UserPrompt = build_user_prompt(Intent, Context),
+      SysPrompt = system_prompt(),
+
+      verbose_log(Verbose, "\e[36m│\e[0m \e[2m── system prompt ──\e[0m\n~ts\n", [SysPrompt]),
+      verbose_log(Verbose, "\e[36m│\e[0m \e[2m── user prompt ──\e[0m\n~ts\n", [UserPrompt]),
+      verbose_log(Verbose, "\e[36m│\e[0m \e[2m── command ──\e[0m\n~ts\n",
+        [lists:flatten(["command: ", unicode:characters_to_list(Command),
+          ", model: ", unicode:characters_to_list(elixir_config:get(situation_model, "sonnet")),
+          ", timeout: ", integer_to_list(Timeout), "ms",
+          ", session_continuing: ", atom_to_list(elixir_config:get(situation_session_started, false))])]),
+
       case invoke_command(Command, UserPrompt, Timeout) of
         {ok, Code} ->
           Trimmed = string:trim(Code),
+          verbose_log(Verbose, "\e[36m│\e[0m \e[2m── raw response ──\e[0m\n~ts\n", [Code]),
           Parsed = parse_code(Trimmed, Meta, E),
           {Trimmed, Parsed};
         {error, timeout} ->
+          verbose_log(Verbose, "\e[36m│\e[0m \e[31m── timeout after ~Bms ──\e[0m\n", [Timeout]),
           file_error(Meta, E, ?MODULE, {hole_invocation_timeout, Timeout});
         {error, Reason} ->
+          verbose_log(Verbose, "\e[36m│\e[0m \e[31m── error: ~ts ──\e[0m\n", [Reason]),
           file_error(Meta, E, ?MODULE, {hole_invocation_error, Reason})
       end
   end.

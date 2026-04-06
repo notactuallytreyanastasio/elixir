@@ -327,7 +327,8 @@ defmodule Code do
                                   :situation_timeout,
                                   :situation_cache,
                                   :situation_expert_node,
-                                  :situation_model
+                                  :situation_model,
+                                  :situation_verbose
                                 ]
 
   @doc """
@@ -1968,6 +1969,15 @@ defmodule Code do
     end
 
     :elixir_config.put(:situation_model, value)
+    :ok
+  end
+
+  def put_compiler_option(:situation_verbose, value) do
+    if not is_boolean(value) do
+      raise "compiler option :situation_verbose should be a boolean, got: #{inspect(value)}"
+    end
+
+    :elixir_config.put(:situation_verbose, value)
     :ok
   end
 
