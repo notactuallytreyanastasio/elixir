@@ -186,5 +186,26 @@ defmodule Kernel.SituationTest do
       assert :ok = Code.put_compiler_option(:situation_expert_node, :my_node)
       assert :ok = Code.put_compiler_option(:situation_expert_node, false)
     end
+
+    test "put_compiler_option accepts valid situation_model" do
+      assert :ok = Code.put_compiler_option(:situation_model, "opus")
+      assert :ok = Code.put_compiler_option(:situation_model, "sonnet")
+    end
+
+    test "put_compiler_option rejects invalid situation_model" do
+      assert_raise RuntimeError, ~r/should be a string/, fn ->
+        Code.put_compiler_option(:situation_model, :opus)
+      end
+    end
+  end
+
+  describe "command routing" do
+    test "claude command is detected as Claude CLI" do
+      assert :elixir_situation.is_claude_cli("claude")
+      assert :elixir_situation.is_claude_cli("/usr/local/bin/claude")
+      assert :elixir_situation.is_claude_cli("claude --model opus")
+      refute :elixir_situation.is_claude_cli(@mock_script)
+      refute :elixir_situation.is_claude_cli("echo ok")
+    end
   end
 end

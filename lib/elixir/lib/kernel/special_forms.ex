@@ -2012,16 +2012,26 @@ defmodule Kernel.SpecialForms do
   Set the LLM command in your project's `mix.exs`:
 
       def project do
-        [elixirc_options: [situation_command: "claude --print"]]
+        [elixirc_options: [situation_command: "claude"]]
       end
 
   Or at runtime:
 
-      Code.put_compiler_option(:situation_command, "claude --print")
+      Code.put_compiler_option(:situation_command, "claude")
+
+  When the command is `"claude"`, the compiler automatically adds the
+  flags needed for compile-time use: `--print`, `--bare`,
+  `--dangerously-skip-permissions`, `--output-format text`, and
+  `--system-prompt`. This uses your Pro/Max subscription — no API
+  key needed.
+
+  You can also set a custom command that receives a prompt on stdin
+  and returns raw Elixir code on stdout.
 
   ## Options
 
-    * `:situation_command` - the shell command to invoke (receives prompt on stdin, returns code on stdout)
+    * `:situation_command` - `"claude"` for Claude CLI (recommended), or a custom command path
+    * `:situation_model` - Claude model to use (default: `"sonnet"`)
     * `:situation_timeout` - timeout in milliseconds (default: 30000)
     * `:situation_cache` - whether to cache LLM results (default: true)
     * `:situation_expert_node` - explicit Expert LS engine node name (optional, auto-discovered)

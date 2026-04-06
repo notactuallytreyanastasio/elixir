@@ -326,7 +326,8 @@ defmodule Code do
                                   :situation_command,
                                   :situation_timeout,
                                   :situation_cache,
-                                  :situation_expert_node
+                                  :situation_expert_node,
+                                  :situation_model
                                 ]
 
   @doc """
@@ -1958,6 +1959,15 @@ defmodule Code do
     end
 
     :elixir_config.put(:situation_expert_node, value)
+    :ok
+  end
+
+  def put_compiler_option(:situation_model, value) do
+    if not is_binary(value) do
+      raise "compiler option :situation_model should be a string, got: #{inspect(value)}"
+    end
+
+    :elixir_config.put(:situation_model, value)
     :ok
   end
 
