@@ -62,12 +62,16 @@ expand_situation_clause(Meta, _, _, E) ->
   file_error(Meta, E, elixir_clauses, {bad_or_missing_clauses, {'situation', 'do'}}).
 
 %% Hole detection
+%%
+%% Recognized forms:
+%%   ___("intent")     — function call syntax: {:___, meta, ["intent"]}
+%%   ___.("intent")    — anonymous call syntax (also supported for backwards compat)
 
+detect_hole({'___', _, [Intent]}) when is_binary(Intent) ->
+  {hole, Intent};
 detect_hole({{'.', _, [{'___', _, Kind}]}, _, [Intent]})
     when is_atom(Kind), is_binary(Intent) ->
   {hole, Intent};
-detect_hole({'___', _, Kind}) when is_atom(Kind) ->
-  {hole, <<>>};
 detect_hole(_) ->
   false.
 

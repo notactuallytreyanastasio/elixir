@@ -409,6 +409,11 @@ expand({'___', Meta, Kind}, S, #{context := Context} = E) when is_atom(Kind) ->
       {{'___', Meta, Kind}, S#elixir_ex{tainted_function=true}, E}
   end;
 
+%% Hole operator with intent string: ___("intent") — only valid inside situation block bodies
+expand({'___', Meta, Args}, S, E) when is_list(Args) ->
+  function_error(Meta, E, ?MODULE, {hole_outside_situation, '___'}),
+  {{'___', Meta, nil}, S#elixir_ex{tainted_function=true}, E};
+
 expand({Name, Meta, Kind}, S, #{context := match} = E) when is_atom(Name), is_atom(Kind) ->
   #elixir_ex{
     prematch={_, _, PrematchVersion},

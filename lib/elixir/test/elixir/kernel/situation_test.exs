@@ -19,7 +19,7 @@ defmodule Kernel.SituationTest do
       {result, _} =
         Code.eval_string("""
         situation :test do
-          :test -> ___.("return ok")
+          :test -> ___("return ok")
         end
         """)
 
@@ -42,7 +42,7 @@ defmodule Kernel.SituationTest do
       {result, _} =
         Code.eval_string("""
         situation {:ok, 42} do
-          {:ok, x} -> ___.("return x")
+          {:ok, x} -> ___("return x")
           {:error, _} -> :error_branch
         end
         """)
@@ -50,15 +50,28 @@ defmodule Kernel.SituationTest do
       assert result == 42
     end
 
-    test "bare ___ hole without intent string" do
+    test "dot syntax also works for backwards compat" do
       {result, _} =
         Code.eval_string("""
         situation :test do
-          :test -> ___
+          :test -> ___.("return ok")
         end
         """)
 
-      assert result == :generated_default
+      assert result == :ok
+    end
+
+    test "multi-line intent string" do
+      {result, _} =
+        Code.eval_string(~S"""
+        situation {:ok, 42} do
+          {:ok, x} -> ___("
+            return x
+          ")
+        end
+        """)
+
+      assert result == 42
     end
   end
 
@@ -67,7 +80,7 @@ defmodule Kernel.SituationTest do
       {result, _} =
         Code.eval_string("""
         situation {:ok, 42} do
-          {:ok, x} -> ___.("return x")
+          {:ok, x} -> ___("return x")
         end
         """)
 
@@ -78,7 +91,7 @@ defmodule Kernel.SituationTest do
       {result, _} =
         Code.eval_string("""
         situation 5 do
-          x when x > 3 -> ___.("return ok")
+          x when x > 3 -> ___("return ok")
           _ -> :small
         end
         """)
@@ -100,7 +113,19 @@ defmodule Kernel.SituationTest do
       assert output =~ "can only be used inside situation"
     end
 
-    test "___.(intent) outside situation block raises compile error" do
+    test "___() outside situation block raises compile error" do
+      output =
+        capture_io(:stderr, fn ->
+          assert_raise CompileError, fn ->
+            Code.eval_string(~s[___("do something")])
+          end
+        end)
+
+      assert output =~ "hole operator"
+      assert output =~ "can only be used inside situation"
+    end
+
+    test "___.() outside situation block raises compile error" do
       output =
         capture_io(:stderr, fn ->
           assert_raise CompileError, fn ->
@@ -136,7 +161,7 @@ defmodule Kernel.SituationTest do
           assert_raise CompileError, fn ->
             Code.eval_string("""
             situation :test do
-              :test -> ___.("return ok")
+              :test -> ___("return ok")
             end
             """)
           end
@@ -151,7 +176,7 @@ defmodule Kernel.SituationTest do
           assert_raise CompileError, fn ->
             Code.eval_string("""
             situation :test do
-              :test -> ___.("invalid code")
+              :test -> ___("invalid code")
             end
             """)
           end

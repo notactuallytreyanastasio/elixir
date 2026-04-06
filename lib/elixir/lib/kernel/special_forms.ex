@@ -1998,14 +1998,21 @@ defmodule Kernel.SpecialForms do
   ## Hole Syntax
 
       situation expr do
-        pattern1 -> ___.("describe what this clause should do")
-        pattern2 -> regular_code_here()
+        pattern ->
+          ___("describe what this clause should do")
       end
 
   The string passed to `___` describes the developer's intent.
   The compiler sends this along with code context to the
-  configured LLM command. A bare `___` without a string is
-  also valid but provides the LLM less guidance.
+  configured LLM command. Multi-line intents work naturally:
+
+      situation expr do
+        pattern ->
+          ___("
+            describe what this clause should do,
+            including edge cases and expected return shape
+          ")
+      end
 
   ## Configuration
 
@@ -2040,13 +2047,13 @@ defmodule Kernel.SpecialForms do
 
       situation fetch_user(conn) do
         {:ok, user} ->
-          ___.("load the user's account, check if paid, return user data or 403")
+          ___("load the user's account, check if paid, return user data or 403")
 
         {:error, :not_found} ->
-          ___.("return a 404 response with appropriate error message")
+          ___("return a 404 response with appropriate error message")
 
         {:error, reason} ->
-          ___.("log the error and return a 500 response")
+          ___("log the error and return a 500 response")
       end
 
   After compilation, the generated code is a normal `case` expression.
