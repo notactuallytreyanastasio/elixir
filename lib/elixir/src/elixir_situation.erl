@@ -458,10 +458,10 @@ invoke_llm(Intent, Context, Meta, E) ->
 
       case invoke_command(Command, UserPrompt, Timeout) of
         {ok, Code} ->
-          Trimmed = string:trim(Code),
           verbose_log(Verbose, "\e[36m│\e[0m \e[2m── raw response ──\e[0m\n~ts\n", [Code]),
-          Parsed = parse_code(Trimmed, Meta, E),
-          {Trimmed, Parsed};
+          Cleaned = strip_markdown_fences(string:trim(Code)),
+          Parsed = parse_code(Cleaned, Meta, E),
+          {Cleaned, Parsed};
         {error, timeout} ->
           verbose_log(Verbose, "\e[36m│\e[0m \e[31m── timeout after ~Bms ──\e[0m\n", [Timeout]),
           file_error(Meta, E, ?MODULE, {hole_invocation_timeout, Timeout});
