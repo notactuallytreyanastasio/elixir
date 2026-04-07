@@ -605,7 +605,8 @@ tmp_file() ->
 %% ===================================================================
 
 parse_code(Code, Meta, E) ->
-  Charlist = unicode:characters_to_list(Code),
+  Cleaned = strip_markdown_fences(Code),
+  Charlist = unicode:characters_to_list(Cleaned),
   try elixir:string_to_quoted(Charlist, 1, 1, <<"situation">>, []) of
     {ok, Quoted} -> Quoted;
     {error, {_, _, Msg}} ->
@@ -613,6 +614,24 @@ parse_code(Code, Meta, E) ->
   catch
     _:_ ->
       file_error(Meta, E, ?MODULE, {hole_parse_error, "tokenization failed"})
+  end.
+
+%% Strip markdown code fences that Claude sometimes adds despite instructions
+strip_markdown_fences(Code) ->
+  Trimmed = string:trim(Code),
+  case Trimmed of
+    <<"```", Rest/binary>> ->
+      %% Strip opening fence (```elixir, ```ex, or bare ```)
+      AfterOpen = case binary:match(Rest, <<"\n">>) of
+        {Pos, _} -> binary:part(Rest, Pos + 1, byte_size(Rest) - Pos - 1);
+        nomatch -> Rest
+      end,
+      %% Strip closing fence
+      case binary:match(AfterOpen, <<"```">>) of
+        {ClosePos, _} -> string:trim(binary:part(AfterOpen, 0, ClosePos));
+        nomatch -> string:trim(AfterOpen)
+      end;
+    _ -> Trimmed
   end.
 
 %% ===================================================================
