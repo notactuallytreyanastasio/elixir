@@ -1985,6 +1985,84 @@ defmodule Kernel.SpecialForms do
   """
   defmacro case(condition, clauses), do: error!([condition, clauses])
 
+  @doc ~S"""
+  Matches the given expression against the given clauses, with
+  LLM-backed hole filling for clause bodies marked with `___`.
+
+  `situation/2` works exactly like `case/2`, except that clause
+  bodies can use the hole operator `___` to delegate code generation
+  to a configured LLM at compile time. After compilation, the result
+  is indistinguishable from hand-written code — it receives full
+  type checking, pattern inference, and Dialyzer analysis.
+
+  ## Hole Syntax
+
+      situation expr do
+        pattern ->
+          ___("describe what this clause should do")
+      end
+
+  The string passed to `___` describes the developer's intent.
+  The compiler sends this along with code context to the
+  configured LLM command. Multi-line intents work naturally:
+
+      situation expr do
+        pattern ->
+          ___("
+            describe what this clause should do,
+            including edge cases and expected return shape
+          ")
+      end
+
+  ## Configuration
+
+  Set the LLM command in your project's `mix.exs`:
+
+      def project do
+        [elixirc_options: [situation_command: "claude"]]
+      end
+
+  Or at runtime:
+
+      Code.put_compiler_option(:situation_command, "claude")
+
+  When the command is `"claude"`, the compiler automatically adds the
+  flags needed for compile-time use: `--print`, `--bare`,
+  `--dangerously-skip-permissions`, `--output-format text`, and
+  `--system-prompt`. This uses your Pro/Max subscription — no API
+  key needed.
+
+  You can also set a custom command that receives a prompt on stdin
+  and returns raw Elixir code on stdout.
+
+  ## Options
+
+    * `:situation_command` - `"claude"` for Claude CLI (recommended), or a custom command path
+    * `:situation_model` - Claude model to use (default: `"sonnet"`)
+    * `:situation_timeout` - timeout in milliseconds (default: 30000)
+    * `:situation_cache` - whether to cache LLM results (default: true)
+    * `:situation_expert_node` - explicit Expert LS engine node name (optional, auto-discovered)
+
+  ## Examples
+
+      situation fetch_user(conn) do
+        {:ok, user} ->
+          ___("load the user's account, check if paid, return user data or 403")
+
+        {:error, :not_found} ->
+          ___("return a 404 response with appropriate error message")
+
+        {:error, reason} ->
+          ___("log the error and return a 500 response")
+      end
+
+  After compilation, the generated code is a normal `case` expression.
+  Variables bound in clause patterns are available to the generated code.
+  Variables in generated code do not leak to the outer scope.
+  """
+  @doc since: "1.20.0"
+  defmacro situation(condition, clauses), do: error!([condition, clauses])
+
   @doc """
   Evaluates the expression corresponding to the first clause that
   evaluates to a truthy value.

@@ -96,7 +96,17 @@ start(_Type, _Args) ->
     {on_undefined_variable, raise},
     {parser_options, [{columns, true}]},
     {relative_paths, true},
-    {tracers, []}
+    {tracers, []},
+
+    %% Situation block options
+    {situation_command, false},
+    {situation_timeout, 30000},
+    {situation_cache, true},
+    {situation_expert_node, false},
+    {situation_model, "sonnet"},
+    {situation_verbose, false},
+    {situation_max_retries, 3},
+    {situation_session_started, false}
     | URIConfig
   ],
 

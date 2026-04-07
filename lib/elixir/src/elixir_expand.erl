@@ -337,6 +337,10 @@ expand({'case', Meta, [Expr, Options]}, S, E) ->
   assert_no_match_or_guard_scope(Meta, "case", S, E),
   expand_case(Meta, Expr, Options, S, E);
 
+expand({'situation', Meta, [Expr, Options]}, S, E) ->
+  assert_no_match_or_guard_scope(Meta, "situation", S, E),
+  expand_situation(Meta, Expr, Options, S, E);
+
 expand({'receive', Meta, [Opts]}, S, E) ->
   assert_no_match_or_guard_scope(Meta, "receive", S, E),
   {EClauses, SC, EC} = elixir_clauses:'receive'(Meta, Opts, S, E),
@@ -393,6 +397,22 @@ expand({'_', Meta, Kind} = Var, S, #{context := Context} = E) when is_atom(Kind)
       function_error(Meta, E, ?MODULE, unbound_underscore),
       {Var, S#elixir_ex{tainted_function=true}, E}
   end;
+
+%% Hole operator (___) — only valid inside situation block bodies
+expand({'___', Meta, Kind}, S, #{context := Context} = E) when is_atom(Kind) ->
+  case Context of
+    match ->
+      function_error(Meta, E, ?MODULE, {hole_in_pattern, '___'}),
+      {{'___', Meta, Kind}, S#elixir_ex{tainted_function=true}, E};
+    _ ->
+      function_error(Meta, E, ?MODULE, {hole_outside_situation, '___'}),
+      {{'___', Meta, Kind}, S#elixir_ex{tainted_function=true}, E}
+  end;
+
+%% Hole operator with intent string: ___("intent") — only valid inside situation block bodies
+expand({'___', Meta, Args}, S, E) when is_list(Args) ->
+  function_error(Meta, E, ?MODULE, {hole_outside_situation, '___'}),
+  {{'___', Meta, nil}, S#elixir_ex{tainted_function=true}, E};
 
 expand({Name, Meta, Kind}, S, #{context := match} = E) when is_atom(Name), is_atom(Kind) ->
   #elixir_ex{
@@ -521,6 +541,12 @@ expand({{'.', DotMeta, [Left, Right]}, Meta, Args}, S, E)
   elixir_dispatch:dispatch_require(Meta, ELeft, Right, Args, S, EL, fun(AR, AF) ->
     expand_remote(AR, DotMeta, AF, Meta, Args, S, SL, EL)
   end);
+
+%% Hole operator call (___.(intent)) — only valid inside situation block bodies
+
+expand({{'.', _DotMeta, [{'___', _, Kind}]}, Meta, Args}, S, E) when is_atom(Kind), is_list(Args) ->
+  function_error(Meta, E, ?MODULE, {hole_outside_situation, '___'}),
+  {{'___', Meta, Kind}, S#elixir_ex{tainted_function=true}, E};
 
 %% Anonymous calls
 
@@ -827,6 +853,14 @@ rewrite_case_clauses(FalseMeta, FalseExpr, TrueMeta, TrueExpr) ->
     {'->', FalseMeta, [[false], FalseExpr]},
     {'->', TrueMeta, [[true], TrueExpr]}
   ]}].
+
+%% Situation
+
+expand_situation(Meta, Expr, Opts, S, E) ->
+  {EExpr, SE, EE} = expand(Expr, S, E),
+  {EOpts, SO, EO} = elixir_situation:'situation'(Meta, Opts, SE, EE),
+  %% Output is a case expression — Erlang translation handles it normally
+  {{'case', Meta, [EExpr, EOpts]}, SO, EO}.
 
 %% Comprehensions
 
@@ -1333,4 +1367,10 @@ format_error({parens_map_lookup, Map, Field, Context}) ->
 format_error({super_in_genserver, {Name, Arity}}) ->
   io_lib:format("calling super for GenServer callback ~ts/~B is deprecated", [Name, Arity]);
 format_error('__cursor__') ->
-  "reserved special form __cursor__ cannot be expanded, it is used exclusively to annotate ASTs".
+  "reserved special form __cursor__ cannot be expanded, it is used exclusively to annotate ASTs";
+
+format_error({hole_in_pattern, _}) ->
+  "the hole operator (___) cannot be used in patterns, only in clause bodies inside situation blocks";
+
+format_error({hole_outside_situation, _}) ->
+  "the hole operator (___) can only be used inside situation blocks".

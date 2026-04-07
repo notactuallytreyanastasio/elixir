@@ -322,7 +322,13 @@ defmodule Code do
                                   :on_undefined_variable,
                                   :infer_signatures,
                                   :no_warn_undefined,
-                                  :module_definition
+                                  :module_definition,
+                                  :situation_command,
+                                  :situation_timeout,
+                                  :situation_cache,
+                                  :situation_expert_node,
+                                  :situation_model,
+                                  :situation_verbose
                                 ]
 
   @doc """
@@ -1918,6 +1924,60 @@ defmodule Code do
     end
 
     :elixir_config.put(:on_undefined_variable, value)
+    :ok
+  end
+
+  def put_compiler_option(:situation_command, value) do
+    if not (is_binary(value) or value == false) do
+      raise "compiler option :situation_command should be a binary or false, got: #{inspect(value)}"
+    end
+
+    :elixir_config.put(:situation_command, value)
+    :ok
+  end
+
+  def put_compiler_option(:situation_timeout, value) do
+    if not (is_integer(value) and value > 0) do
+      raise "compiler option :situation_timeout should be a positive integer, got: #{inspect(value)}"
+    end
+
+    :elixir_config.put(:situation_timeout, value)
+    :ok
+  end
+
+  def put_compiler_option(:situation_cache, value) do
+    if not is_boolean(value) do
+      raise "compiler option :situation_cache should be a boolean, got: #{inspect(value)}"
+    end
+
+    :elixir_config.put(:situation_cache, value)
+    :ok
+  end
+
+  def put_compiler_option(:situation_expert_node, value) do
+    if not is_atom(value) do
+      raise "compiler option :situation_expert_node should be an atom, got: #{inspect(value)}"
+    end
+
+    :elixir_config.put(:situation_expert_node, value)
+    :ok
+  end
+
+  def put_compiler_option(:situation_model, value) do
+    if not is_binary(value) do
+      raise "compiler option :situation_model should be a string, got: #{inspect(value)}"
+    end
+
+    :elixir_config.put(:situation_model, value)
+    :ok
+  end
+
+  def put_compiler_option(:situation_verbose, value) do
+    if not is_boolean(value) do
+      raise "compiler option :situation_verbose should be a boolean, got: #{inspect(value)}"
+    end
+
+    :elixir_config.put(:situation_verbose, value)
     :ok
   end
 
