@@ -105,6 +105,7 @@ start(_Type, _Args) ->
     {situation_expert_node, false},
     {situation_model, "sonnet"},
     {situation_verbose, false},
+    {situation_max_retries, 3},
     {situation_session_started, false}
     | URIConfig
   ],

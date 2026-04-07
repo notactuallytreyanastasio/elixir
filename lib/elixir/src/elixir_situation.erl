@@ -66,24 +66,11 @@ expand_situation_clause(_Meta, {'->', CMeta, [Left, Right]}, S, E) ->
       print_indented_lines(string:trim(Intent)),
       io:format(standard_error, "\e[36m│\e[0m\n\e[36m│\e[0m \e[33mInvoking Claude...\e[0m\n", []),
 
-      %% Gather context and invoke LLM
+      %% Gather context and invoke LLM, with retry on compile errors
       Context = gather_context(ELeft, SL, EL),
-      {RawCode, Generated} = invoke_llm(Intent, Context, CMeta, EL),
-
-      %% Print generated code
-      io:format(standard_error, "\e[36m│\e[0m \e[32mGenerated:\e[0m\n", []),
-      print_indented_lines(RawCode),
-
-      %% Rewrite the source file
-      rewrite_source(File, Line, Right, RawCode),
-
-      %% Show git diff
-      show_diff(File),
-
-      io:format(standard_error, "\e[36m└─\e[0m\n\n", []),
-
-      %% Expand the generated code as the clause body
-      {ERight, SR, ER} = elixir_expand:expand(Generated, SL, EL),
+      MaxRetries = elixir_config:get(situation_max_retries, 3),
+      {ERight, SR, ER} = invoke_and_expand_with_retry(
+        Intent, Context, CMeta, EL, SL, File, Line, Right, MaxRetries),
       {{'->', CMeta, [ELeft, ERight]}, SR, ER};
     false ->
       %% Normal clause — expand body directly
@@ -92,6 +79,64 @@ expand_situation_clause(_Meta, {'->', CMeta, [Left, Right]}, S, E) ->
   end;
 expand_situation_clause(Meta, _, _, E) ->
   file_error(Meta, E, elixir_clauses, {bad_or_missing_clauses, {'situation', 'do'}}).
+
+%% ===================================================================
+%% Invoke + expand with retry on compile errors
+%% ===================================================================
+
+invoke_and_expand_with_retry(Intent, Context, CMeta, EL, SL, File, Line, HoleExpr, MaxRetries) ->
+  invoke_and_expand_loop(Intent, Context, CMeta, EL, SL, File, Line, HoleExpr, 0, MaxRetries).
+
+invoke_and_expand_loop(Intent, Context, CMeta, EL, SL, File, Line, HoleExpr, Attempt, MaxRetries) ->
+  %% Build the prompt — first attempt uses the original intent,
+  %% retries use a fix-up prompt with the error
+  {RawCode, Generated} = invoke_llm(Intent, Context, CMeta, EL),
+
+  %% Print generated code
+  io:format(standard_error, "\e[36m│\e[0m \e[32mGenerated:\e[0m\n", []),
+  print_indented_lines(RawCode),
+
+  %% Try to expand the generated code
+  try elixir_expand:expand(Generated, SL, EL) of
+    {ERight, SR, ER} ->
+      %% Success — rewrite source and show diff
+      rewrite_source(File, Line, HoleExpr, RawCode),
+      show_diff(File),
+      io:format(standard_error, "\e[36m└─\e[0m\n\n", []),
+      {ERight, SR, ER}
+  catch
+    Class:Error:Stacktrace when Attempt < MaxRetries ->
+      %% Expansion failed — format the error and ask Claude to fix it
+      ErrorMsg = format_compile_error(Class, Error, Stacktrace),
+      io:format(standard_error,
+        "\e[36m│\e[0m\n\e[36m│\e[0m \e[31mCompile error (attempt ~B/~B):\e[0m\n",
+        [Attempt + 1, MaxRetries + 1]),
+      print_indented_lines(ErrorMsg),
+      io:format(standard_error,
+        "\e[36m│\e[0m \e[33mAsking Claude to fix...\e[0m\n", []),
+
+      %% Build a fix-up prompt and retry
+      FixIntent = iolist_to_binary([
+        "The previous code you generated had a compile error:\n\n",
+        ErrorMsg, "\n\n",
+        "The code that failed was:\n\n",
+        RawCode, "\n\n",
+        "Please fix the code. Output ONLY the corrected Elixir expression."
+      ]),
+      invoke_and_expand_loop(FixIntent, Context, CMeta, EL, SL,
+                              File, Line, HoleExpr, Attempt + 1, MaxRetries);
+    Class:Error:Stacktrace ->
+      %% Out of retries — re-raise the original error
+      io:format(standard_error,
+        "\e[36m│\e[0m \e[31mFailed after ~B attempts, giving up.\e[0m\n"
+        "\e[36m└─\e[0m\n\n", [Attempt + 1]),
+      erlang:raise(Class, Error, Stacktrace)
+  end.
+
+format_compile_error(_Class, {badmatch, {error, Reason}}, _Stacktrace) ->
+  unicode:characters_to_binary(io_lib:format("~p", [Reason]));
+format_compile_error(_Class, Error, _Stacktrace) ->
+  unicode:characters_to_binary(io_lib:format("~p", [Error])).
 
 %% ===================================================================
 %% Diagnostic output helpers
